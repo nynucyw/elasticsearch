@@ -7,6 +7,7 @@
 
 package org.elasticsearch.compute.data;
 
+import org.apache.lucene.util.Accountable;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.Writeable;
@@ -82,7 +83,7 @@ public final class Page implements Writeable {
     private Page(Page prev, Block[] toAdd) {
         for (Block block : toAdd) {
             if (prev.positionCount != block.getPositionCount()) {
-                throw new IllegalArgumentException("Block does not have same position count");
+                throw new IllegalArgumentException("Block [" + block + "] does not have same position count");
             }
         }
         this.positionCount = prev.positionCount;
@@ -223,6 +224,10 @@ public final class Page implements Writeable {
         }
     }
 
+    public long ramBytesUsedByBlocks() {
+        return Arrays.stream(blocks).mapToLong(Accountable::ramBytesUsed).sum();
+    }
+
     /**
      * Release all blocks in this page, decrementing any breakers accounting for these blocks.
      */
@@ -236,7 +241,15 @@ public final class Page implements Writeable {
         Releasables.closeExpectNoException(blocks);
     }
 
-    static int mapSize(int expectedSize) {
-        return expectedSize < 2 ? expectedSize + 1 : (int) (expectedSize / 0.75 + 1.0);
+    /**
+     * Before passing a Page to another Driver, it is necessary to switch the owning block factories of its Blocks to their parents,
+     * which are associated with the global circuit breaker. This ensures that when the new driver releases this Page, it returns
+     * memory directly to the parent block factory instead of the local block factory. This is important because the local block
+     * factory is not thread safe and doesn't support simultaneous access by more than one thread.
+     */
+    public void allowPassingToDifferentDriver() {
+        for (Block block : blocks) {
+            block.allowPassingToDifferentDriver();
+        }
     }
 }

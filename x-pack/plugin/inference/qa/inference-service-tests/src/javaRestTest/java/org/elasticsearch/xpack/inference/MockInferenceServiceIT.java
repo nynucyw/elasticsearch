@@ -7,107 +7,56 @@
 
 package org.elasticsearch.xpack.inference;
 
-import org.apache.http.util.EntityUtils;
-import org.elasticsearch.client.Request;
-import org.elasticsearch.client.Response;
-import org.elasticsearch.common.Strings;
-import org.elasticsearch.common.settings.SecureString;
-import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.common.util.concurrent.ThreadContext;
 import org.elasticsearch.inference.TaskType;
-import org.elasticsearch.test.cluster.ElasticsearchCluster;
-import org.elasticsearch.test.cluster.local.distribution.DistributionType;
-import org.elasticsearch.test.rest.ESRestTestCase;
-import org.junit.ClassRule;
 
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 
-import static org.hamcrest.Matchers.anyOf;
-import static org.hamcrest.Matchers.empty;
-import static org.hamcrest.Matchers.equalTo;
-import static org.hamcrest.Matchers.hasSize;
-import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.is;
 
-public class MockInferenceServiceIT extends ESRestTestCase {
+public class MockInferenceServiceIT extends InferenceBaseRestTest {
 
-    @ClassRule
-    public static ElasticsearchCluster cluster = ElasticsearchCluster.local()
-        .distribution(DistributionType.DEFAULT)
-        .setting("xpack.license.self_generated.type", "trial")
-        .setting("xpack.security.enabled", "true")
-        .plugin("org.elasticsearch.xpack.inference.mock.TestInferenceServicePlugin")
-        .user("x_pack_rest_user", "x-pack-test-password")
-        .build();
-
-    @Override
-    protected String getTestRestCluster() {
-        return cluster.getHttpAddresses();
-    }
-
-    @Override
-    protected Settings restClientSettings() {
-        String token = basicAuthHeaderValue("x_pack_rest_user", new SecureString("x-pack-test-password".toCharArray()));
-        return Settings.builder().put(ThreadContext.PREFIX + ".Authorization", token).build();
-    }
-
-    static String mockServiceModelConfig() {
-        return Strings.format("""
-            {
-              "service": "test_service",
-              "service_settings": {
-                "model": "my_model",
-                "api_key": "abc64"
-              },
-              "task_settings": {
-                "temperature": 3
-              }
-            }
-            """);
-    }
-
+    @SuppressWarnings("unchecked")
     public void testMockService() throws IOException {
-        String modelId = "test-mock";
-        var putModel = putModel(modelId, mockServiceModelConfig(), TaskType.SPARSE_EMBEDDING);
-        var getModel = getModel(modelId, TaskType.SPARSE_EMBEDDING);
-        assertEquals(putModel, getModel);
+        String inferenceEntityId = "test-mock";
+        var putModel = putModel(inferenceEntityId, mockServiceModelConfig(), TaskType.SPARSE_EMBEDDING);
+        var getModels = getModels(inferenceEntityId, TaskType.SPARSE_EMBEDDING);
+        var model = ((List<Map<String, Object>>) getModels.get("models")).get(0);
 
-        for (var modelMap : List.of(putModel, getModel)) {
-            assertEquals(modelId, modelMap.get("model_id"));
+        for (var modelMap : List.of(putModel, model)) {
+            assertEquals(inferenceEntityId, modelMap.get("model_id"));
             assertEquals(TaskType.SPARSE_EMBEDDING, TaskType.fromString((String) modelMap.get("task_type")));
             assertEquals("test_service", modelMap.get("service"));
         }
 
         // The response is randomly generated, the input can be anything
-        var inference = inferOnMockService(modelId, TaskType.SPARSE_EMBEDDING, List.of(randomAlphaOfLength(10)));
-        assertNonEmptyInferenceResults(inference, TaskType.SPARSE_EMBEDDING);
+        var inference = inferOnMockService(inferenceEntityId, List.of(randomAlphaOfLength(10)));
+        assertNonEmptyInferenceResults(inference, 1, TaskType.SPARSE_EMBEDDING);
     }
 
-    @SuppressWarnings("unchecked")
     public void testMockServiceWithMultipleInputs() throws IOException {
-        String modelId = "test-mock-with-multi-inputs";
-        var putModel = putModel(modelId, mockServiceModelConfig(), TaskType.SPARSE_EMBEDDING);
+        String inferenceEntityId = "test-mock-with-multi-inputs";
+        putModel(inferenceEntityId, mockServiceModelConfig(), TaskType.SPARSE_EMBEDDING);
 
         // The response is randomly generated, the input can be anything
         var inference = inferOnMockService(
-            modelId,
+            inferenceEntityId,
             TaskType.SPARSE_EMBEDDING,
             List.of(randomAlphaOfLength(5), randomAlphaOfLength(10), randomAlphaOfLength(15))
         );
 
-        var tokens = (List<Map<String, Object>>) inference.get("inference_results");
-        assertThat(tokens, hasSize(3));
-        assertNonEmptyInferenceResults(inference, TaskType.SPARSE_EMBEDDING);
+        assertNonEmptyInferenceResults(inference, 3, TaskType.SPARSE_EMBEDDING);
     }
 
     @SuppressWarnings("unchecked")
     public void testMockService_DoesNotReturnSecretsInGetResponse() throws IOException {
-        String modelId = "test-mock";
-        var putModel = putModel(modelId, mockServiceModelConfig(), TaskType.SPARSE_EMBEDDING);
-        var getModel = getModel(modelId, TaskType.SPARSE_EMBEDDING);
+        String inferenceEntityId = "test-mock";
+        var putModel = putModel(inferenceEntityId, mockServiceModelConfig(), TaskType.SPARSE_EMBEDDING);
+        var getModels = getModels(inferenceEntityId, TaskType.SPARSE_EMBEDDING);
+        var model = ((List<Map<String, Object>>) getModels.get("models")).get(0);
 
-        var serviceSettings = (Map<String, Object>) getModel.get("service_settings");
+        var serviceSettings = (Map<String, Object>) model.get("service_settings");
         assertNull(serviceSettings.get("api_key"));
         assertNotNull(serviceSettings.get("model"));
 
@@ -116,59 +65,41 @@ public class MockInferenceServiceIT extends ESRestTestCase {
         assertNotNull(putServiceSettings.get("model"));
     }
 
-    private Map<String, Object> putModel(String modelId, String modelConfig, TaskType taskType) throws IOException {
-        String endpoint = Strings.format("_inference/%s/%s", taskType, modelId);
-        var request = new Request("PUT", endpoint);
-        request.setJsonEntity(modelConfig);
-        var reponse = client().performRequest(request);
-        assertOkWithErrorMessage(reponse);
-        return entityAsMap(reponse);
-    }
+    @SuppressWarnings("unchecked")
+    public void testMockService_DoesNotReturnHiddenField_InModelResponses() throws IOException {
+        String inferenceEntityId = "test-mock";
+        var putModel = putModel(inferenceEntityId, mockServiceModelConfig(), TaskType.SPARSE_EMBEDDING);
+        var getModels = getModels(inferenceEntityId, TaskType.SPARSE_EMBEDDING);
+        var model = ((List<Map<String, Object>>) getModels.get("models")).get(0);
 
-    public Map<String, Object> getModel(String modelId, TaskType taskType) throws IOException {
-        var endpoint = Strings.format("_inference/%s/%s", taskType, modelId);
-        var request = new Request("GET", endpoint);
-        var reponse = client().performRequest(request);
-        assertOkWithErrorMessage(reponse);
-        return entityAsMap(reponse);
-    }
-
-    private Map<String, Object> inferOnMockService(String modelId, TaskType taskType, List<String> input) throws IOException {
-        var endpoint = Strings.format("_inference/%s/%s", taskType, modelId);
-        var request = new Request("POST", endpoint);
-
-        var bodyBuilder = new StringBuilder("{\"input\": [");
-        for (var in : input) {
-            bodyBuilder.append('"').append(in).append('"').append(',');
+        for (var modelMap : List.of(putModel, model)) {
+            assertEquals(inferenceEntityId, modelMap.get("model_id"));
+            assertThat(modelMap.get("service_settings"), is(Map.of("model", "my_model")));
+            assertEquals(TaskType.SPARSE_EMBEDDING, TaskType.fromString((String) modelMap.get("task_type")));
+            assertEquals("test_service", modelMap.get("service"));
         }
-        // remove last comma
-        bodyBuilder.deleteCharAt(bodyBuilder.length() - 1);
-        bodyBuilder.append("]}");
 
-        System.out.println("body_request:" + bodyBuilder);
-        request.setJsonEntity(bodyBuilder.toString());
-        var reponse = client().performRequest(request);
-        assertOkWithErrorMessage(reponse);
-        return entityAsMap(reponse);
+        // The response is randomly generated, the input can be anything
+        var inference = inferOnMockService(inferenceEntityId, List.of(randomAlphaOfLength(10)));
+        assertNonEmptyInferenceResults(inference, 1, TaskType.SPARSE_EMBEDDING);
     }
 
     @SuppressWarnings("unchecked")
-    protected void assertNonEmptyInferenceResults(Map<String, Object> resultMap, TaskType taskType) {
-        if (taskType == TaskType.SPARSE_EMBEDDING) {
-            var tokens = (List<Map<String, Object>>) resultMap.get("inference_results");
-            tokens.forEach(result -> { assertThat(result.keySet(), not(empty())); });
-        } else {
-            fail("test with task type [" + taskType + "] are not supported yet");
-        }
-    }
+    public void testMockService_DoesReturnHiddenField_InModelResponses() throws IOException {
+        String inferenceEntityId = "test-mock";
+        var putModel = putModel(inferenceEntityId, mockServiceModelConfig(null, true), TaskType.SPARSE_EMBEDDING);
+        var getModels = getModels(inferenceEntityId, TaskType.SPARSE_EMBEDDING);
+        var model = ((List<Map<String, Object>>) getModels.get("models")).get(0);
 
-    protected static void assertOkWithErrorMessage(Response response) throws IOException {
-        int statusCode = response.getStatusLine().getStatusCode();
-        if (statusCode == 200 || statusCode == 201) {
-            return;
+        for (var modelMap : List.of(putModel, model)) {
+            assertEquals(inferenceEntityId, modelMap.get("model_id"));
+            assertThat(modelMap.get("service_settings"), is(Map.of("model", "my_model", "hidden_field", "my_hidden_value")));
+            assertEquals(TaskType.SPARSE_EMBEDDING, TaskType.fromString((String) modelMap.get("task_type")));
+            assertEquals("test_service", modelMap.get("service"));
         }
 
-        String responseStr = EntityUtils.toString(response.getEntity());
-        assertThat(responseStr, response.getStatusLine().getStatusCode(), anyOf(equalTo(200), equalTo(201)));
+        // The response is randomly generated, the input can be anything
+        var inference = inferOnMockService(inferenceEntityId, List.of(randomAlphaOfLength(10)));
+        assertNonEmptyInferenceResults(inference, 1, TaskType.SPARSE_EMBEDDING);
     }
 }

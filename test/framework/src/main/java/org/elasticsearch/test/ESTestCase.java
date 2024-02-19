@@ -39,6 +39,8 @@ import org.apache.lucene.tests.util.TestUtil;
 import org.apache.lucene.tests.util.TimeUnits;
 import org.apache.lucene.util.SetOnce;
 import org.elasticsearch.TransportVersion;
+import org.elasticsearch.action.ActionFuture;
+import org.elasticsearch.action.RequestBuilder;
 import org.elasticsearch.action.support.PlainActionFuture;
 import org.elasticsearch.action.support.SubscribableListener;
 import org.elasticsearch.bootstrap.BootstrapForTesting;
@@ -77,6 +79,7 @@ import org.elasticsearch.common.xcontent.XContentHelper;
 import org.elasticsearch.core.CheckedRunnable;
 import org.elasticsearch.core.PathUtils;
 import org.elasticsearch.core.PathUtilsForTesting;
+import org.elasticsearch.core.RefCounted;
 import org.elasticsearch.core.RestApiVersion;
 import org.elasticsearch.core.Strings;
 import org.elasticsearch.core.SuppressForbidden;
@@ -119,6 +122,8 @@ import org.elasticsearch.xcontent.XContentParser;
 import org.elasticsearch.xcontent.XContentParser.Token;
 import org.elasticsearch.xcontent.XContentParserConfiguration;
 import org.elasticsearch.xcontent.XContentType;
+import org.hamcrest.Matcher;
+import org.hamcrest.MatcherAssert;
 import org.hamcrest.Matchers;
 import org.junit.After;
 import org.junit.AfterClass;
@@ -144,6 +149,7 @@ import java.security.NoSuchAlgorithmException;
 import java.security.NoSuchProviderException;
 import java.security.Provider;
 import java.security.SecureRandom;
+import java.time.Instant;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -783,6 +789,16 @@ public abstract class ESTestCase extends LuceneTestCase {
      */
     public static long randomLongBetween(long min, long max) {
         return RandomNumbers.randomLongBetween(random(), min, max);
+    }
+
+    /**
+     * @return a random instant between a min and a max value with a random nanosecond precision
+     */
+    public static Instant randomInstantBetween(Instant minInstant, Instant maxInstant) {
+        return Instant.ofEpochSecond(
+            randomLongBetween(minInstant.getEpochSecond(), maxInstant.getEpochSecond()),
+            randomLongBetween(0, 999999999)
+        );
     }
 
     /**
@@ -1692,10 +1708,7 @@ public abstract class ESTestCase extends LuceneTestCase {
      */
     protected final XContentParser createParser(XContentParserConfiguration config, XContent xContent, BytesReference data)
         throws IOException {
-        if (data.hasArray()) {
-            return xContent.createParser(config, data.array(), data.arrayOffset(), data.length());
-        }
-        return xContent.createParser(config, data.streamInput());
+        return XContentHelper.createParserNotCompressed(config, data, xContent.type());
     }
 
     protected final XContentParser createParserWithCompatibilityFor(XContent xContent, String data, RestApiVersion restApiVersion)
@@ -2054,18 +2067,18 @@ public abstract class ESTestCase extends LuceneTestCase {
             barrier.await(10, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            fail(e);
+            fail(e, "safeAwait: interrupted waiting for CyclicBarrier release");
         } catch (Exception e) {
-            fail(e);
+            fail(e, "safeAwait: CyclicBarrier did not release within the timeout");
         }
     }
 
     public static void safeAwait(CountDownLatch countDownLatch) {
         try {
-            assertTrue(countDownLatch.await(10, TimeUnit.SECONDS));
+            assertTrue("safeAwait: CountDownLatch did not reach zero within the timeout", countDownLatch.await(10, TimeUnit.SECONDS));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            fail(e);
+            fail(e, "safeAwait: interrupted waiting for CountDownLatch to reach zero");
         }
     }
 
@@ -2076,7 +2089,7 @@ public abstract class ESTestCase extends LuceneTestCase {
             return future.get(10, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new AssertionError("safeAwait: interrupted", e);
+            throw new AssertionError("safeAwait: interrupted waiting for SubscribableListener", e);
         } catch (ExecutionException e) {
             throw new AssertionError("safeAwait: listener was completed exceptionally", e);
         } catch (TimeoutException e) {
@@ -2089,13 +2102,25 @@ public abstract class ESTestCase extends LuceneTestCase {
             Thread.sleep(millis);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            fail(e);
+            fail(e, "safeSleep: interrupted");
         }
     }
 
     protected static boolean isTurkishLocale() {
         return Locale.getDefault().getLanguage().equals(new Locale("tr").getLanguage())
             || Locale.getDefault().getLanguage().equals(new Locale("az").getLanguage());
+    }
+
+    /*
+     * Assert.assertThat (inherited from LuceneTestCase superclass) has been deprecated.
+     * So make sure that all assertThat references use the non-deprecated version.
+     */
+    public static <T> void assertThat(T actual, Matcher<? super T> matcher) {
+        MatcherAssert.assertThat(actual, matcher);
+    }
+
+    public static <T> void assertThat(String reason, T actual, Matcher<? super T> matcher) {
+        MatcherAssert.assertThat(reason, actual, matcher);
     }
 
     public static <T> T fail(Throwable t, String msg, Object... args) {
@@ -2110,5 +2135,21 @@ public abstract class ESTestCase extends LuceneTestCase {
     public static <T> T asInstanceOf(Class<T> clazz, Object o) {
         assertThat(o, Matchers.instanceOf(clazz));
         return (T) o;
+    }
+
+    public static <T extends Throwable> T expectThrows(Class<T> expectedType, ActionFuture<? extends RefCounted> future) {
+        return expectThrows(
+            expectedType,
+            "Expected exception " + expectedType.getSimpleName() + " but no exception was thrown",
+            () -> future.actionGet().decRef()  // dec ref if we unexpectedly fail to not leak transport response
+        );
+    }
+
+    public static <T extends Throwable> T expectThrows(Class<T> expectedType, RequestBuilder<?, ?> builder) {
+        return expectThrows(
+            expectedType,
+            "Expected exception " + expectedType.getSimpleName() + " but no exception was thrown",
+            () -> builder.get().decRef() // dec ref if we unexpectedly fail to not leak transport response
+        );
     }
 }

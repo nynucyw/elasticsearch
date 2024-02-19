@@ -15,15 +15,15 @@ import org.elasticsearch.compute.operator.EvalOperator;
 import org.elasticsearch.compute.operator.EvalOperator.ExpressionEvaluator;
 import org.elasticsearch.core.Releasable;
 import org.elasticsearch.core.Releasables;
-import org.elasticsearch.xpack.esql.evaluator.mapper.EvaluatorMapper;
-import org.elasticsearch.xpack.esql.planner.LocalExecutionPlanner;
+import org.elasticsearch.xpack.esql.expression.function.FunctionInfo;
+import org.elasticsearch.xpack.esql.expression.function.Param;
+import org.elasticsearch.xpack.esql.expression.function.scalar.EsqlScalarFunction;
+import org.elasticsearch.xpack.esql.planner.PlannerUtils;
 import org.elasticsearch.xpack.ql.expression.Expression;
 import org.elasticsearch.xpack.ql.expression.Expressions;
 import org.elasticsearch.xpack.ql.expression.Nullability;
 import org.elasticsearch.xpack.ql.expression.TypeResolutions;
 import org.elasticsearch.xpack.ql.expression.function.OptionalArgument;
-import org.elasticsearch.xpack.ql.expression.function.scalar.ScalarFunction;
-import org.elasticsearch.xpack.ql.expression.gen.script.ScriptTemplate;
 import org.elasticsearch.xpack.ql.tree.NodeInfo;
 import org.elasticsearch.xpack.ql.tree.Source;
 import org.elasticsearch.xpack.ql.type.DataType;
@@ -38,10 +38,26 @@ import static org.elasticsearch.xpack.ql.type.DataTypes.NULL;
 /**
  * Function returning the first non-null value.
  */
-public class Coalesce extends ScalarFunction implements EvaluatorMapper, OptionalArgument {
+public class Coalesce extends EsqlScalarFunction implements OptionalArgument {
     private DataType dataType;
 
-    public Coalesce(Source source, Expression first, List<Expression> rest) {
+    @FunctionInfo(
+        returnType = { "boolean", "text", "integer", "keyword", "long" },
+        description = "Returns the first of its arguments that is not null."
+    )
+    public Coalesce(
+        Source source,
+        @Param(
+            name = "expression",
+            type = { "boolean", "text", "integer", "keyword", "long" },
+            description = "Expression to evaluate"
+        ) Expression first,
+        @Param(
+            name = "expressionX",
+            type = { "boolean", "text", "integer", "keyword", "long" },
+            description = "Other expression to evaluate"
+        ) List<Expression> rest
+    ) {
         super(source, Stream.concat(Stream.of(first), rest.stream()).toList());
     }
 
@@ -95,11 +111,6 @@ public class Coalesce extends ScalarFunction implements EvaluatorMapper, Optiona
     }
 
     @Override
-    public ScriptTemplate asScript() {
-        throw new UnsupportedOperationException("functions do not support scripting");
-    }
-
-    @Override
     public Expression replaceChildren(List<Expression> newChildren) {
         return new Coalesce(source(), newChildren.get(0), newChildren.subList(1, newChildren.size()));
     }
@@ -115,11 +126,6 @@ public class Coalesce extends ScalarFunction implements EvaluatorMapper, Optiona
     }
 
     @Override
-    public Object fold() {
-        return EvaluatorMapper.super.fold();
-    }
-
-    @Override
     public ExpressionEvaluator.Factory toEvaluator(Function<Expression, ExpressionEvaluator.Factory> toEvaluator) {
         List<ExpressionEvaluator.Factory> childEvaluators = children().stream().map(toEvaluator).toList();
         return new ExpressionEvaluator.Factory() {
@@ -127,7 +133,7 @@ public class Coalesce extends ScalarFunction implements EvaluatorMapper, Optiona
             public ExpressionEvaluator get(DriverContext context) {
                 return new CoalesceEvaluator(
                     context,
-                    LocalExecutionPlanner.toElementType(dataType()),
+                    PlannerUtils.toElementType(dataType()),
                     childEvaluators.stream().map(x -> x.get(context)).toList()
                 );
             }

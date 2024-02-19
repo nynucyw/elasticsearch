@@ -55,10 +55,8 @@ public class UpdateSettingsRequest extends AcknowledgedRequest<UpdateSettingsReq
         indicesOptions = IndicesOptions.readIndicesOptions(in);
         settings = readSettingsFromStream(in);
         preserveExisting = in.readBoolean();
-        if (in.getTransportVersion().onOrAfter(TransportVersions.V_7_12_0)) {
-            origin = in.readString();
-        }
-        if (in.getTransportVersion().onOrAfter(TransportVersions.UPDATE_NON_DYNAMIC_SETTINGS_ADDED)) {
+        origin = in.readString();
+        if (in.getTransportVersion().onOrAfter(TransportVersions.V_8_12_0)) {
             reopen = in.readBoolean();
         }
     }
@@ -200,10 +198,8 @@ public class UpdateSettingsRequest extends AcknowledgedRequest<UpdateSettingsReq
         indicesOptions.writeIndicesOptions(out);
         settings.writeTo(out);
         out.writeBoolean(preserveExisting);
-        if (out.getTransportVersion().onOrAfter(TransportVersions.V_7_12_0)) {
-            out.writeString(origin);
-        }
-        if (out.getTransportVersion().onOrAfter(TransportVersions.UPDATE_NON_DYNAMIC_SETTINGS_ADDED)) {
+        out.writeString(origin);
+        if (out.getTransportVersion().onOrAfter(TransportVersions.V_8_12_0)) {
             out.writeBoolean(reopen);
         }
     }
